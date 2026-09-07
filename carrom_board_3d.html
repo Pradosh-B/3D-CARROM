@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; padding:0; overflow:hidden; background:#1a1410; height:100%; }
+  #canvasHolder { width:100%; height:100vh; }
+  #hint {
+    position:absolute; bottom:14px; left:50%; transform:translateX(-50%);
+    color:#e8dcc8; font-family:Georgia, serif; font-size:13px; opacity:0.75;
+    background:rgba(0,0,0,0.35); padding:6px 14px; border-radius:20px;
+    pointer-events:none; letter-spacing:0.3px;
+  }
+</style>
+</head>
+<body>
+<div id="canvasHolder"></div>
+<div id="hint">Drag to rotate &nbsp;•&nbsp; Scroll to zoom</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const holder = document.getElementById('canvasHolder');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1410);
+scene.fog = new THREE.Fog(0x1a1410, 20, 45);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 200);
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+holder.appendChild(renderer.domElement);
+
+// ---------- Lighting ----------
+scene.add(new THREE.AmbientLight(0xfff4e0, 0.55));
+const sun = new THREE.DirectionalLight(0xfff0d8, 1.15);
+sun.position.set(8, 16, 8);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048,2048);
+sun.shadow.camera.left = -14; sun.shadow.camera.right = 14;
+sun.shadow.camera.top = 14; sun.shadow.camera.bottom = -14;
+sun.shadow.camera.far = 40;
+scene.add(sun);
+const fillLight = new THREE.PointLight(0xffe6c0, 0.35);
+fillLight.position.set(-10, 8, -10);
+scene.add(fillLight);
+
+// ---------- Ground ----------
+const groundMat = new THREE.MeshStandardMaterial({ color:0x2b2118, roughness:1 });
+const ground = new THREE.Mesh(new THREE.CircleGeometry(30,48), groundMat);
+ground.rotation.x = -Math.PI/2;
+ground.position.y = -0.6;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------- Board surface texture (canvas) ----------
+function makeBoardTexture(){
+  const size = 1024;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+
+  // base cream wood color
+  ctx.fillStyle = '#e8cf9f';
+  ctx.fillRect(0,0,size,size);
+
+  // subtle wood grain
+  ctx.globalAlpha = 0.06;
+  ctx.strokeStyle = '#7a5a2f';
+  for(let i=0;i<40;i++){
+    ctx.beginPath();
+    ctx.moveTo(0, i*26 + Math.random()*10);
+    ctx.bezierCurveTo(size*0.3, i*26+Math.random()*20, size*0.7, i*26-Math.random()*20, size, i*26);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  const cx = size/2, cy = size/2;
+  const margin = size*0.09;
+  const playArea = size - margin*2;
+
+  ctx.strokeStyle = '#8a1f1f';
+  ctx.lineWidth = 4;
+
+  // outer play boundary
+  ctx.strokeRect(margin, margin, playArea, playArea);
+
+  // corner pocket circles (decorative arcs) + small stars
+  const pocketR = size*0.045;
+  const cornerInset = margin + pocketR*1.1;
+  const corners = [[cornerInset,cornerInset],[size-cornerInset,cornerInset],[size-cornerInset,size-cornerInset],[cornerInset,size-cornerInset]];
+  corners.forEach(([x,y])=>{
+    ctx.beginPath();
+    ctx.arc(x,y,pocketR*2.1,0,Math.PI*2);
+    ctx.stroke();
+  });
+
+  // traditional corner triangle / arrow patterns pointing into each pocket
+  ctx.fillStyle = 'rgba(138,31,31,0.85)';
+  function cornerTriangles(cx0, cy0, dx, dy){
+    // dx, dy point away from the corner toward the board center along each edge
+    const len = size*0.16;
+    const gap = size*0.018;
+    for(let i=0;i<5;i++){
+      const inset = pocketR*2.4 + i*(len/5+gap);
+      ctx.save();
+      ctx.translate(cx0 + dx*inset, cy0 + dy*inset*0 );
+      ctx.restore();
+    }
+  }
+  // draw simple triangular pennants along the two edges leading into each corner pocket
+  function edgeTriangles(x1,y1,x2,y2, count){
+    const dx=(x2-x1)/count, dy=(y2-y1)/count;
+    const nx = -dy/Math.hypot(dx,dy), ny = dx/Math.hypot(dx,dy);
+    const triW = size*0.018;
+    for(let i=0;i<count;i++){
+      const bx = x1+dx*i, by=y1+dy*i;
+      const bx2 = x1+dx*(i+1), by2=y1+dy*(i+1);
+      const mx=(bx+bx2)/2, my=(by+by2)/2;
+      ctx.beginPath();
+      ctx.moveTo(bx,by);
+      ctx.lineTo(bx2,by2);
+      ctx.lineTo(mx+nx*triW*(i%2===0?1:-1), my+ny*triW*(i%2===0?1:-1));
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  const eOff = margin + pocketR*2.6;
+  const eFar = size*0.30;
+  edgeTriangles(cornerInset+eOff, margin+2, cornerInset+eFar, margin+2, 6);
+  edgeTriangles(margin+2, cornerInset+eOff, margin+2, cornerInset+eFar, 6);
+  edgeTriangles(size-cornerInset-eOff, margin+2, size-cornerInset-eFar, margin+2, 6);
+  edgeTriangles(size-margin-2, cornerInset+eOff, size-margin-2, cornerInset+eFar, 6);
+  edgeTriangles(size-cornerInset-eOff, size-margin-2, size-cornerInset-eFar, size-margin-2, 6);
+  edgeTriangles(size-margin-2, size-cornerInset-eOff, size-margin-2, size-cornerInset-eFar, 6);
+  edgeTriangles(cornerInset+eOff, size-margin-2, cornerInset+eFar, size-margin-2, 6);
+  edgeTriangles(margin+2, size-cornerInset-eOff, margin+2, size-cornerInset-eFar, 6);
+
+  // center circle
+  ctx.beginPath();
+  ctx.arc(cx,cy,size*0.09,0,Math.PI*2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(cx,cy,size*0.02,0,Math.PI*2);
+  ctx.fillStyle = '#8a1f1f';
+  ctx.fill();
+
+  // player baseline arcs (4 sides) with striker lines
+  const arcR = size*0.16;
+  const baseOffset = margin + size*0.10;
+  function baseline(rot){
+    ctx.save();
+    ctx.translate(cx,cy);
+    ctx.rotate(rot);
+    ctx.beginPath();
+    ctx.arc(0, playArea/2 - size*0.045, arcR, Math.PI*1.15, Math.PI*1.85);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-arcR*0.55, playArea/2 - size*0.16);
+    ctx.lineTo(arcR*0.55, playArea/2 - size*0.16);
+    ctx.stroke();
+    ctx.restore();
+  }
+  baseline(0);
+  baseline(Math.PI/2);
+  baseline(Math.PI);
+  baseline(-Math.PI/2);
+
+  // outer decorative border
+  ctx.strokeStyle = '#5a3a1a';
+  ctx.lineWidth = 10;
+  ctx.strokeRect(size*0.02,size*0.02,size*0.96,size*0.96);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.anisotropy = 8;
+  return tex;
+}
+
+// ---------- Board group ----------
+const board = new THREE.Group();
+scene.add(board);
+
+const boardSize = 9;
+const boardThickness = 0.35;
+
+const boardTopMat = new THREE.MeshStandardMaterial({ map: makeBoardTexture(), roughness:0.55, metalness:0.02 });
+const boardSideMat = new THREE.MeshStandardMaterial({ color:0x4a2f16, roughness:0.7 });
+const boardGeo = new THREE.BoxGeometry(boardSize, boardThickness, boardSize);
+const materials = [boardSideMat, boardSideMat, boardTopMat, boardSideMat, boardSideMat, boardSideMat];
+const boardMesh = new THREE.Mesh(boardGeo, materials);
+boardMesh.position.y = 0;
+boardMesh.castShadow = true;
+boardMesh.receiveShadow = true;
+board.add(boardMesh);
+
+// raised outer frame
+const frameMat = new THREE.MeshStandardMaterial({ color:0x6e1f1f, roughness:0.45, metalness:0.05 });
+const frameThickness = 0.55;
+const frameHeight = 0.55;
+function makeFrameBar(len, w, h){
+  return new THREE.Mesh(new THREE.BoxGeometry(len, h, w), frameMat);
+}
+const outerEdge = boardSize/2 + frameThickness/2;
+const barLen = boardSize + frameThickness*2;
+const topY = boardThickness/2 + frameHeight/2 - 0.1;
+
+const bar1 = makeFrameBar(barLen, frameThickness, frameHeight); bar1.position.set(0, topY, outerEdge); bar1.castShadow=true; bar1.receiveShadow=true; board.add(bar1);
+const bar2 = bar1.clone(); bar2.position.z = -outerEdge; board.add(bar2);
+const bar3 = makeFrameBar(frameThickness, barLen, frameHeight); bar3.position.set(outerEdge, topY, 0); bar3.castShadow=true; bar3.receiveShadow=true; board.add(bar3);
+const bar4 = bar3.clone(); bar4.position.x = -outerEdge; board.add(bar4);
+
+// ---------- Devices mounted on the wooden frame, one per side ----------
+function makeScreenTexture(question, options){
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 288;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createLinearGradient(0,0,512,288);
+  grad.addColorStop(0, '#0d3b66');
+  grad.addColorStop(1, '#12608f');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,512,288);
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(10,10,512-20,288-20);
+
+  // question text (wrapped)
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 24px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const words = question.split(' ');
+  let line = '', lines = [];
+  words.forEach(w=>{
+    const test = line + w + ' ';
+    if(ctx.measureText(test).width > 470 && line !== ''){
+      lines.push(line); line = w + ' ';
+    } else line = test;
+  });
+  lines.push(line);
+  const qStartY = 40;
+  lines.forEach((l,i)=> ctx.fillText(l.trim(), 256, qStartY + i*28));
+
+  // 4 options in a 2x2 grid, each numbered
+  const optStartY = qStartY + lines.length*28 + 26;
+  const cellW = 235, cellH = 46, gapX = 12, gapY = 10;
+  const gridW = cellW*2 + gapX;
+  const startX = 256 - gridW/2;
+  options.forEach((opt, i)=>{
+    const col = i % 2, row = Math.floor(i/2);
+    const x = startX + col*(cellW+gapX);
+    const y = optStartY + row*(cellH+gapY);
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.strokeStyle = 'rgba(255,209,102,0.9)';
+    ctx.lineWidth = 2;
+    roundRect(ctx, x, y, cellW, cellH, 8);
+    ctx.fill();
+    ctx.stroke();
+
+    // number badge
+    ctx.fillStyle = '#ffd166';
+    ctx.beginPath();
+    ctx.arc(x+24, y+cellH/2, 15, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#12324a';
+    ctx.font = 'bold 18px Arial';
+    ctx.fillText(String(i+1), x+24, y+cellH/2+1);
+
+    // option text
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '17px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(truncate(ctx, opt, cellW-58), x+46, y+cellH/2+1);
+    ctx.textAlign = 'center';
+  });
+
+  return new THREE.CanvasTexture(c);
+}
+
+function roundRect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+
+function truncate(ctx, text, maxWidth){
+  if(ctx.measureText(text).width <= maxWidth) return text;
+  let t = text;
+  while(ctx.measureText(t+'…').width > maxWidth && t.length>0){ t = t.slice(0,-1); }
+  return t + '…';
+}
+
+const devMountMat = new THREE.MeshStandardMaterial({ color:0x2b2b2b, roughness:0.5, metalness:0.3 });
+const devBezelMat = new THREE.MeshStandardMaterial({ color:0x141414, roughness:0.4, metalness:0.4 });
+
+// decent sized landscape device, w > h
+const devW = 1.7, devH = 0.95, devD = 0.06;
+
+function addDeviceOnFrame(x, z, facingRotY, question, options){
+  const group = new THREE.Group();
+  group.position.set(x, topY + frameHeight/2, z);
+  board.add(group);
+
+  // stand base sitting on the frame bar
+  const standH = 0.55;
+  const standBase = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 0.06, 20), devMountMat);
+  standBase.position.y = 0.03;
+  group.add(standBase);
+
+  const standArm = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, standH, 12), devMountMat);
+  standArm.position.y = standH/2 + 0.06;
+  group.add(standArm);
+
+  // device body (landscape) - pivoted at its bottom edge so the stand attaches
+  // below/behind the device rather than appearing centered on the screen
+  const bodyGroup = new THREE.Group();
+  bodyGroup.position.y = standH + 0.06;
+  bodyGroup.rotation.y = facingRotY;
+  bodyGroup.rotation.x = -0.35; // tilt back for viewing
+  group.add(bodyGroup);
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(devW, devH, devD), devBezelMat);
+  body.position.y = devH/2;
+  body.castShadow = true;
+  bodyGroup.add(body);
+
+  const tex = makeScreenTexture(question, options);
+  const screenMat = new THREE.MeshStandardMaterial({
+    map: tex,
+    emissive: 0xffffff,
+    emissiveMap: tex,
+    emissiveIntensity: 0.45,
+    roughness: 0.3
+  });
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(devW*0.93, devH*0.87), screenMat);
+  screen.position.set(0, devH/2, devD/2 + 0.002);
+  bodyGroup.add(screen);
+
+  // thin camera dot for realism
+  const cam = new THREE.Mesh(new THREE.CircleGeometry(0.015,12), new THREE.MeshStandardMaterial({color:0x000000}));
+  cam.position.set(0, devH - 0.05, devD/2 + 0.003);
+  bodyGroup.add(cam);
+}
+
+const sideOffset = outerEdge + frameThickness*0.05;
+addDeviceOnFrame(0, sideOffset, 0,
+  'How many coins does each player start with in carrom?',
+  ['9', '10', '12', '8']);
+addDeviceOnFrame(0, -sideOffset, Math.PI,
+  'What is the red coin in carrom called?',
+  ['Queen', 'King', 'Ace', 'Joker']);
+addDeviceOnFrame(sideOffset, 0, Math.PI/2,
+  'Which country is carrom believed to originate from?',
+  ['India', 'China', 'Egypt', 'Brazil']);
+addDeviceOnFrame(-sideOffset, 0, -Math.PI/2,
+  'What is used to hit the coins in carrom?',
+  ['Striker', 'Cue', 'Mallet', 'Paddle']);
+
+// pocket holes (black discs, slightly recessed) at corners
+const pocketMat = new THREE.MeshStandardMaterial({ color:0x0a0a0a, roughness:0.8 });
+const pocketR = 0.42;
+const pocketInset = boardSize/2 - 0.55;
+const pocketPositions = [
+  [ pocketInset, pocketInset],
+  [-pocketInset, pocketInset],
+  [ pocketInset,-pocketInset],
+  [-pocketInset,-pocketInset],
+];
+const netMat = new THREE.MeshStandardMaterial({ color:0x2a1a10, roughness:0.9, side: THREE.DoubleSide });
+pocketPositions.forEach(([x,z])=>{
+  const hole = new THREE.Mesh(new THREE.CylinderGeometry(pocketR, pocketR, 0.12, 32), pocketMat);
+  hole.position.set(x, boardThickness/2 + 0.001, z);
+  hole.receiveShadow = true;
+  board.add(hole);
+
+  // hanging net pouch beneath the pocket, traditional carrom board style
+  const net = new THREE.Mesh(new THREE.ConeGeometry(pocketR*0.95, 0.55, 16, 4, true), netMat);
+  net.position.set(x, -boardThickness/2 - 0.22, z);
+  net.rotation.x = Math.PI;
+  board.add(net);
+});
+
+// ---------- Coins ----------
+const coinTopY = boardThickness/2 + 0.075;
+const blackMat = new THREE.MeshStandardMaterial({ color:0x1a1a1a, roughness:0.4, metalness:0.15 });
+const whiteMat = new THREE.MeshStandardMaterial({ color:0xf3ead8, roughness:0.35, metalness:0.05 });
+const queenMat = new THREE.MeshStandardMaterial({ color:0xb5192a, roughness:0.35, metalness:0.1 });
+const coinGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.15, 32);
+const coinsGroup = new THREE.Group();
+board.add(coinsGroup);
+
+function addCoin(mat, x, z){
+  const coin = new THREE.Mesh(coinGeo, mat);
+  coin.position.set(x, coinTopY, z);
+  coin.castShadow = true;
+  coin.receiveShadow = true;
+  coinsGroup.add(coin);
+}
+
+// center queen
+addCoin(queenMat, 0, 0);
+
+// ring 1 - 6 coins alternating
+const ring1R = 0.66;
+for(let i=0;i<6;i++){
+  const ang = (Math.PI/3)*i;
+  const x = Math.cos(ang)*ring1R;
+  const z = Math.sin(ang)*ring1R;
+  addCoin(i%2===0 ? blackMat : whiteMat, x, z);
+}
+
+// ring 2 - 12 coins alternating
+const ring2R = 1.3;
+for(let i=0;i<12;i++){
+  const ang = (Math.PI/6)*i + Math.PI/12;
+  const x = Math.cos(ang)*ring2R;
+  const z = Math.sin(ang)*ring2R;
+  addCoin(i%2===0 ? whiteMat : blackMat, x, z);
+}
+
+// ---------- Striker ----------
+const strikerMat = new THREE.MeshStandardMaterial({ color:0xead9b0, roughness:0.4, metalness:0.05 });
+const striker = new THREE.Mesh(new THREE.CylinderGeometry(0.46,0.46,0.16,32), strikerMat);
+striker.position.set(0, boardThickness/2 + 0.08, boardSize/2 - 1.55);
+striker.castShadow = true;
+striker.receiveShadow = true;
+board.add(striker);
+
+// ---------- Poles with numbered flags ----------
+function makeFlagTexture(number){
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 180;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,256,180);
+  // pennant background
+  ctx.fillStyle = '#c72c2c';
+  ctx.beginPath();
+  ctx.moveTo(0,0);
+  ctx.lineTo(220,90);
+  ctx.lineTo(0,180);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#7a1414';
+  ctx.lineWidth = 6;
+  ctx.stroke();
+  // number
+  ctx.fillStyle = '#fff8ec';
+  ctx.font = 'bold 100px Georgia';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(number), 78, 92);
+  return new THREE.CanvasTexture(c);
+}
+
+const poleMat = new THREE.MeshStandardMaterial({ color:0x3d2a18, roughness:0.6, metalness:0.1 });
+const poleHeight = 3.1;
+const poleR = 0.07;
+
+const poleCorners = [
+  { pos:[ pocketInset+0.75,  pocketInset+0.75], num:1, dir:[1,1] },
+  { pos:[-pocketInset-0.75,  pocketInset+0.75], num:2, dir:[-1,1] },
+  { pos:[-pocketInset-0.75, -pocketInset-0.75], num:3, dir:[-1,-1] },
+  { pos:[ pocketInset+0.75, -pocketInset-0.75], num:4, dir:[1,-1] },
+];
+
+const flags = []; // for animation
+
+poleCorners.forEach(({pos, num, dir})=>{
+  const [x,z] = pos;
+  const poleGroup = new THREE.Group();
+  poleGroup.position.set(x, boardThickness/2, z);
+  board.add(poleGroup);
+
+  const poleMesh = new THREE.Mesh(new THREE.CylinderGeometry(poleR, poleR*1.3, poleHeight, 12), poleMat);
+  poleMesh.position.y = poleHeight/2;
+  poleMesh.castShadow = true;
+  poleGroup.add(poleMesh);
+
+  // small finial ball on top
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.09,12,12), poleMat);
+  ball.position.y = poleHeight + 0.05;
+  poleGroup.add(ball);
+
+  // flag - segmented plane for waving animation
+  const flagW = 0.85, flagH = 0.6;
+  const segX = 10, segY = 4;
+  const flagGeo = new THREE.PlaneGeometry(flagW, flagH, segX, segY);
+  const flagMat = new THREE.MeshStandardMaterial({
+    map: makeFlagTexture(num),
+    side: THREE.DoubleSide,
+    roughness: 0.7,
+    transparent: true
+  });
+  const flagMesh = new THREE.Mesh(flagGeo, flagMat);
+  flagMesh.castShadow = true;
+  // attach broad edge (u=0) at the pole, tip points outward — mirror geometry
+  // via scale so this holds for corners on either side of the board (dir[0] = ±1)
+  flagMesh.position.set(dir[0]*(flagW/2 + poleR), poleHeight - 0.35, 0);
+  flagMesh.scale.x = dir[0];
+  poleGroup.add(flagMesh);
+  flags.push({ mesh: flagMesh, origin: flagGeo.attributes.position.array.slice() });
+});
+
+// ---------- Custom orbit controls (drag to rotate, wheel to zoom) ----------
+let radius = 13, theta = Math.PI/3.4, phi = Math.PI/3.1;
+const target = new THREE.Vector3(0,0.3,0);
+function updateCamera(){
+  camera.position.x = target.x + radius * Math.sin(phi) * Math.sin(theta);
+  camera.position.y = target.y + radius * Math.cos(phi);
+  camera.position.z = target.z + radius * Math.sin(phi) * Math.cos(theta);
+  camera.lookAt(target);
+}
+updateCamera();
+
+let dragging = false, lastX=0, lastY=0;
+renderer.domElement.addEventListener('pointerdown', e=>{ dragging=true; lastX=e.clientX; lastY=e.clientY; });
+window.addEventListener('pointerup', ()=> dragging=false);
+window.addEventListener('pointermove', e=>{
+  if(!dragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  theta -= dx * 0.006;
+  phi -= dy * 0.006;
+  phi = Math.max(0.06, Math.min(Math.PI - 0.06, phi));
+  updateCamera();
+});
+renderer.domElement.addEventListener('wheel', e=>{
+  radius += e.deltaY * 0.01;
+  radius = Math.max(6, Math.min(26, radius));
+  updateCamera();
+  e.preventDefault();
+}, { passive:false });
+
+// touch support
+let lastTouchDist = null;
+renderer.domElement.addEventListener('touchstart', e=>{
+  if(e.touches.length===1){ dragging=true; lastX=e.touches[0].clientX; lastY=e.touches[0].clientY; }
+});
+renderer.domElement.addEventListener('touchmove', e=>{
+  if(e.touches.length===1 && dragging){
+    const dx = e.touches[0].clientX - lastX, dy = e.touches[0].clientY - lastY;
+    lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
+    theta -= dx * 0.006;
+    phi -= dy * 0.006;
+    phi = Math.max(0.06, Math.min(Math.PI - 0.06, phi));
+    updateCamera();
+  } else if(e.touches.length===2){
+    const d = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+    if(lastTouchDist!==null){
+      radius += (lastTouchDist - d) * 0.02;
+      radius = Math.max(6, Math.min(26, radius));
+      updateCamera();
+    }
+    lastTouchDist = d;
+  }
+}, { passive:true });
+renderer.domElement.addEventListener('touchend', ()=>{ dragging=false; lastTouchDist=null; });
+
+// ---------- Resize ----------
+window.addEventListener('resize', ()=>{
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---------- Animate ----------
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  flags.forEach(({mesh, origin})=>{
+    const pos = mesh.geometry.attributes.position;
+    for(let i=0;i<pos.count;i++){
+      const ox = origin[i*3], oy = origin[i*3+1], oz = origin[i*3+2];
+      const factor = (ox + 0.5); // more movement further from attached edge
+      const wave = Math.sin(t*3 + ox*4) * 0.05 * Math.max(factor,0);
+      pos.setZ(i, oz + wave);
+    }
+    pos.needsUpdate = true;
+    mesh.geometry.computeVertexNormals();
+  });
+
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
